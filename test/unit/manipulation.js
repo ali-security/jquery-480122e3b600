@@ -2430,3 +2430,114 @@ test( "Validate creation of multiple quantities of certain elements (#13818)", 4
 		});
 	});
 });
+
+test( "<option>/<optgroup> HTML is not parsed inside a <select> wrapper (CVE-2020-11023)", function() {
+	var probe = document.createElement( "div" );
+
+	// Support: IE9
+	// IE9 drops <option> elements parsed outside of a <select>,
+	// so the wrapper is still required there
+	// (detected natively, independently of jQuery.support)
+	probe.innerHTML = "<option></option>";
+	if ( !probe.lastChild ) {
+		expect( 1 );
+		ok( true, "IE9 still needs the <select> wrapper; skipping" );
+		return;
+	}
+
+	expect( 14 );
+
+	jQuery.each( [ "option", "optgroup" ], function( i, tag ) {
+		var html = "<" + tag + ">x</" + tag + "></select><b>y</b>",
+			reference = document.createElement( "div" ),
+			parsed = jQuery( html ),
+			fragment = jQuery.parseHTML( html );
+
+		// What a sanitizer (or the browser itself) gets when parsing
+		// the same string inside a generic container
+		reference.innerHTML = html;
+
+		equal( parsed.length, 2, tag + ": jQuery(html) returns both top-level elements" );
+		ok( !!parsed[ 0 ] && jQuery.nodeName( parsed[ 0 ], tag ),
+			tag + ": the first element is the " + tag );
+		ok( !!parsed[ 1 ] && jQuery.nodeName( parsed[ 1 ], "b" ),
+			tag + ": </select> does not break out of a hidden wrapper" );
+		equal( fragment.length, 2, tag + ": jQuery.parseHTML(html) returns both top-level elements" );
+		equal( jQuery( "<div/>" ).html( html )[ 0 ].innerHTML, reference.innerHTML,
+			tag + ": .html(html) parses like innerHTML" );
+		equal( jQuery( "<div/>" ).append( html )[ 0 ].innerHTML, reference.innerHTML,
+			tag + ": .append(html) parses like innerHTML" );
+		equal( jQuery( "<div/>" ).prepend( html )[ 0 ].innerHTML, reference.innerHTML,
+			tag + ": .prepend(html) parses like innerHTML" );
+	});
+});
+
+asyncTest( "Sanitized <option>/<optgroup> HTML doesn't get unsanitized (CVE-2020-11023)", function() {
+	var container,
+		probe = document.createElement( "div" ),
+		calls = [],
+
+		// [ wrapped tag, raw text / RCDATA element hiding the payload ]
+		vectors = [
+			[ "option", "style" ],
+			[ "optgroup", "style" ],
+			[ "option", "xmp" ],
+			[ "option", "title" ],
+			[ "option", "iframe" ],
+			[ "option", "noframes" ],
+			[ "option", "noscript" ],
+			[ "option", "noembed" ],
+			[ "option", "textarea" ]
+		];
+
+	// Support: IE9
+	// IE9 drops <option> elements parsed outside of a <select>,
+	// so the wrapper is still required there
+	// (detected natively, independently of jQuery.support)
+	probe.innerHTML = "<option></option>";
+	if ( !probe.lastChild ) {
+		expect( 1 );
+		ok( true, "IE9 still needs the <select> wrapper; skipping" );
+		start();
+		return;
+	}
+
+	expect( vectors.length * 4 + 1 );
+
+	Globals.register( "xss" );
+	window.xss = function( i ) {
+		calls.push( i );
+	};
+
+	container = jQuery( "<div/>" ).appendTo( "#qunit-fixture" );
+
+	jQuery.each( vectors, function( i, vector ) {
+		var tag = vector[ 0 ],
+			html = "<" + tag + "><" + vector[ 1 ] + "></" + tag + "></select>" +
+				"<img src=url404 onerror=xss(" + i + ")></" + vector[ 1 ] + ">",
+			reference = document.createElement( "div" ),
+			parsed = jQuery( html ),
+			target = jQuery( "<div/>" ).appendTo( container );
+
+		// Parsed inside a generic container (as a sanitizer does), the <img>
+		// is plain text inside the raw text element and is never created
+		reference.innerHTML = html;
+
+		parsed.appendTo( target );
+
+		ok( parsed.length === 1 && jQuery.nodeName( parsed[ 0 ], tag ),
+			html + ": jQuery(html) returns the " + tag + " only" );
+		equal( target[ 0 ].innerHTML, reference.innerHTML,
+			html + ": jQuery(html) parses like innerHTML" );
+		equal( jQuery( "<div/>" ).appendTo( container ).html( html )[ 0 ].innerHTML,
+			reference.innerHTML, html + ": .html(html) parses like innerHTML" );
+		equal( jQuery( "<div/>" ).appendTo( container ).append( html )[ 0 ].innerHTML,
+			reference.innerHTML, html + ": .append(html) parses like innerHTML" );
+	});
+
+	// Give any <img> that got created the time to fire its error handler
+	setTimeout(function() {
+		deepEqual( calls, [], "Insecure code wasn't executed" );
+		start();
+	}, 1000 );
+});
