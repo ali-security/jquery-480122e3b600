@@ -1,0 +1,113 @@
+name: seal-build
+
+# Build-and-pack only. The QUnit suite runs on Travis (.travis.yml), the
+# project's own CI.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write container scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/seal"
+          cat > "$RUNNER_TEMP/seal/build.sh" <<'SEAL_BUILD_EOF'
+          set -euo pipefail
+          # build/tasks/build.js reads COMMIT into the version string when set
+          unset COMMIT
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken 2014-12-17T14:14:28.184000Z
+          # npm 1.x/2.x only sends the token when always-auth is on
+          npm config set always-auth true
+          node --version
+          npm --version
+          # Reproducibility: pin the @DATE stamp to the release build time.
+          # Lives here (not in the version patch) because edits under build/
+          # are dropped from the patch.
+          sed -i 's/( new Date() ).toISOString().replace( \/:\\d+\\.\\d+Z$\/, "Z" )/"2014-12-17T14:01Z"/' build/tasks/build.js
+          grep -q '"2014-12-17T14:01Z"' build/tasks/build.js
+          # The uglify banner year is pinned in Gruntfile.js (version patch).
+          if grep -q "grunt.template.today" Gruntfile.js; then
+            echo "year pin missing"
+            exit 1
+          fi
+          npm install
+          # = `npm test`: jsonlint, build, jshint, jscs, uglify, dist, compare_size
+          ./node_modules/.bin/grunt
+          # Release-time CDN copies (build/release.js makeReleaseCopies)
+          node /seal/cdn.js
+          ls -la dist dist/cdn
+          rm -rf node_modules .github
+          chown -R "$HOST_UID:$HOST_GID" /work
+          npm pack
+          mkdir -p seal-out
+          mv jquery-2.1.2.tgz seal-out/
+          tar tzf seal-out/jquery-2.1.2.tgz | sort
+          chown -R "$HOST_UID:$HOST_GID" /work
+          SEAL_BUILD_EOF
+          cat > "$RUNNER_TEMP/seal/cdn.js" <<'SEAL_CDN_EOF'
+          // Mirrors build/release.js makeReleaseCopies() for the plain
+          // jquery-VER.* set (no archives / md5 files).
+          var fs = require( "fs" ),
+            pkg = require( process.cwd() + "/package.json" ),
+            version = pkg.version,
+            cdnFolder = "dist/cdn",
+            releaseFiles = {
+              "jquery-VER.js": "dist/jquery.js",
+              "jquery-VER.min.js": "dist/jquery.min.js",
+              "jquery-VER.min.map": "dist/jquery.min.map"
+            };
+
+          if ( !fs.existsSync( cdnFolder ) ) {
+            fs.mkdirSync( cdnFolder );
+          }
+
+          Object.keys( releaseFiles ).forEach(function( key ) {
+            var text,
+              builtFile = releaseFiles[ key ],
+              unpathedFile = key.replace( /VER/g, version ),
+              releaseFile = cdnFolder + "/" + unpathedFile;
+
+            if ( /\.map$/.test( releaseFile ) ) {
+              text = fs.readFileSync( builtFile, "utf8" )
+                .replace( /"file":"([^"]+)","sources":\["([^"]+)"\]/,
+                  "\"file\":\"" + unpathedFile.replace( /\.min\.map/, ".min.js" ) +
+                  "\",\"sources\":[\"" + unpathedFile.replace( /\.min\.map/, ".js" ) + "\"]" );
+              fs.writeFileSync( releaseFile, text );
+            } else if ( /\.min\.js$/.test( releaseFile ) ) {
+              text = fs.readFileSync( builtFile, "utf8" )
+                .replace( /\/\/# sourceMappingURL=\S+/, "" );
+              fs.writeFileSync( releaseFile, text );
+            } else {
+              fs.writeFileSync( releaseFile, fs.readFileSync( builtFile ) );
+            }
+            console.log( "wrote " + releaseFile );
+          });
+          SEAL_CDN_EOF
+          chmod +x "$RUNNER_TEMP/seal/build.sh"
+
+      - name: Build and pack (node 0.10, grunt)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -v "$RUNNER_TEMP/seal:/seal" \
+            -w /work \
+            -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+            node:0.10-wheezy bash /seal/build.sh
+          ls -la seal-out
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jquery-npm
+          path: seal-out/jquery-2.1.2.tgz
+          if-no-files-found: error
