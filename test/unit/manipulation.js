@@ -2625,7 +2625,8 @@ asyncTest( "Sanitized HTML doesn't get unsanitized (CVE-2020-11022)", function()
 		jQuery( html ).appendTo( viaInit );
 		viaAppend.append( html );
 		viaReplaceWith.children().replaceWith( html );
-		viaParseHTML.append( jQuery.parseHTML( html ) );
+		// Parse into the page document: the default inert one has scripting off, so <noscript> content would parse as markup
+		viaParseHTML.append( jQuery.parseHTML( html, document ) );
 
 		// The .html() innerHTML shortcut (falls back to .append() for <style>)
 		viaHtml.html( html );
